@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+android:layout_width="match_parent"
+android:layout_height="match_parent"
+android:orientation="vertical"
+android:padding="16dp">
+
+<EditText android:id="@+id/et_device_names" android:hint="Имена устройств (через запятую)" android:layout_width="match_parent" android:layout_height="wrap_content" />
+<EditText android:id="@+id/et_up_intent" android:hint="Intent для UP" android:layout_width="match_parent" android:layout_height="wrap_content" />
+<EditText android:id="@+id/et_down_intent" android:hint="Intent для DOWN" android:layout_width="match_parent" android:layout_height="wrap_content" />
+
+<Button android:id="@+id/btn_start_scan" android:text="Начать сканирование" android:layout_width="match_parent" android:layout_height="wrap_content" />
+
+<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Обнаруженные устройства:" android:textSize="18sp" android:layout_marginTop="16dp" />
+
+<ListView android:id="@+id/list_devices" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" />
+
+<TextView android:id="@+id/tv_last_event" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Последнее событие: —" android:textSize="20sp" android:gravity="center" android:layout_marginTop="16dp" />
+</LinearLayout>
