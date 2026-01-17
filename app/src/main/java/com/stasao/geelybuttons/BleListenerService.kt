@@ -20,77 +20,49 @@ import java.util.UUID
 
 @SuppressLint("MissingPermission")
 class BleListenerService : Service() {
+    companion object {
+        const val EXTRA_CONNECT_ADDRESS = "connect_address"
+        const val EXTRA_AUTO_MODE = "auto_mode"
+    }
 
     private lateinit var bluetoothManager: BluetoothManager
     private lateinit var bluetoothAdapter: BluetoothAdapter
-    private val connectedDevices = mutableMapOf<String, BluetoothGatt>()
 
-    private var targetDeviceNames: List<String> = listOf("RoundRemote")
-    private var upIntentAction: String = ""
-    private var downIntentAction: String = ""
+    private var gatt: BluetoothGatt? = null
+    private var lastConnectAddress: String? = null
 
-    private val TAG = "BleListenerService"
-
+    // === BLE UUIDs (must match ESP firmware) ===
     private val ESP_SERVICE_UUID: UUID = UUID.fromString("4fafc201-1fb5-459e-8fcc-c5c9c331914b")
     private val ESP_CHAR_UUID: UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8")
     private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
-    private val GIB_PACKAGE = "com.salat.gbinder"
-    private val GIB_SET_INT_ACTION = "com.salat.gbinder.SET_INT_PROPERTY"
+    private val TAG = "BleListenerService"
 
-    private val FAN_SPEED_ID = 268566784
-    private val FAN_SPEED_AREA = 8
-
-    private val FAN_SPEED_VALUES = intArrayOf(
-        0,
-        268566785, 268566786, 268566787, 268566788, 268566789,
-        268566790, 268566791, 268566792, 268566793,
-        268566794
-    )
-
-    private var fanSpeedIndex: Int = 0
+    // === Business logic ===
+    private lateinit var gib: GibApi
+    private lateinit var fan: FanSpeedController
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        targetDeviceNames = intent?.getStringExtra("device_names")?.split(",")?.map { it.trim() } ?: listOf("RoundRemote")
-        upIntentAction = intent?.getStringExtra("up_intent") ?: ""
-        downIntentAction = intent?.getStringExtra("down_intent") ?: ""
-
-        val connectAddress = intent?.getStringExtra("connect_address")
-
-        Log.i(TAG, "Сервис запущен. Ищем: $targetDeviceNames | Запрос подключения: $connectAddress")
-
         createNotificationChannel()
-        startForeground(1, getNotification("Запуск..."))
+        startForeground(1, getNotification("Starting..."))
+
+        gib = GibApi(this)
+        fan = FanSpeedController(gib)
 
         bluetoothManager = getSystemService(BluetoothManager::class.java)
         bluetoothAdapter = bluetoothManager.adapter
 
         if (!bluetoothAdapter.isEnabled) {
-            Log.e(TAG, "Bluetooth выключен")
-            updateNotification("Bluetooth выключен")
+            Log.e(TAG, "Bluetooth is OFF")
+            updateNotification("Bluetooth OFF")
             return START_NOT_STICKY
         }
 
+        val connectAddress = intent?.getStringExtra(EXTRA_CONNECT_ADDRESS)
+            ?: getSharedPreferences("prefs", MODE_PRIVATE).getString("saved_mac", null)
+
         if (connectAddress != null) {
-            Log.i(TAG, "Запрос на подключение к $connectAddress")
-            val device = bluetoothAdapter.getRemoteDevice(connectAddress)
-
-            connectedDevices.values.forEach { it.close() }
-            connectedDevices.clear()
-
-            var attempt = 0
-            val handler = Handler(Looper.getMainLooper())
-            val retryRunnable = object : Runnable {
-                override fun run() {
-                    attempt++
-                    Log.i(TAG, "Попытка подключения $attempt к $connectAddress")
-                    device.connectGatt(this@BleListenerService, true, gattCallback, BluetoothDevice.TRANSPORT_LE)
-                    if (attempt < 3) {
-                        handler.postDelayed(this, 3000)
-                    }
-                }
-            }
-            handler.post(retryRunnable)
+            connectToAddress(connectAddress)
         } else {
             startBleScan()
         }
@@ -98,10 +70,28 @@ class BleListenerService : Service() {
         return START_STICKY
     }
 
+    private fun connectToAddress(address: String) {
+        Log.i(TAG, "Connect request: $address")
+        updateNotification("Connecting: $address")
+
+        // Cleanup old gatt
+        try {
+            gatt?.disconnect()
+            gatt?.close()
+        } catch (_: Exception) {}
+        gatt = null
+
+        val device = bluetoothAdapter.getRemoteDevice(address)
+
+        // True = autoConnect; but it may connect "later". For car headunits it can be flaky.
+        // We'll keep it true for now as you had it, but you can try false if needed.
+        gatt = device.connectGatt(this, true, gattCallback, BluetoothDevice.TRANSPORT_LE)
+    }
+
     private fun startBleScan() {
         val scanner = bluetoothAdapter.bluetoothLeScanner ?: run {
-            Log.e(TAG, "BLE сканер не доступен")
-            updateNotification("BLE не поддерживается")
+            Log.e(TAG, "BLE scanner not available")
+            updateNotification("BLE scanner not available")
             return
         }
 
@@ -111,151 +101,141 @@ class BleListenerService : Service() {
 
         try {
             scanner.startScan(null, settings, scanCallback)
-            Log.i(TAG, "Сканирование запущено (все устройства) на 2 секунды")
-            updateNotification("Сканирую все BLE 2 сек...")
+            Log.i(TAG, "Scan started (2 sec)")
+            updateNotification("Scanning BLE (2 sec)...")
 
             Handler(Looper.getMainLooper()).postDelayed({
-                scanner.stopScan(scanCallback)
-                Log.i(TAG, "Сканирование остановлено по таймауту (2 сек)")
-                updateNotification("Сканирование завершено")
+                try {
+                    scanner.stopScan(scanCallback)
+                } catch (_: Exception) {}
+                Log.i(TAG, "Scan stopped")
+                updateNotification("Scan finished")
             }, 2000)
 
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Нет разрешения на сканирование", e)
-            updateNotification("Нет разрешения BLE")
-        }
-    }
-
-    private fun sendGibSetInt(id: Int, value: Int, area: Int? = null) {
-        try {
-            val i = Intent(GIB_SET_INT_ACTION).apply {
-                setPackage(GIB_PACKAGE)
-                putExtra("id", id)
-                putExtra("value", value)
-                if (area != null) putExtra("area", area)
-                addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
-            }
-            sendBroadcast(i)
-            Log.i(TAG, "GIB SET_INT sent: id=$id value=$value area=$area")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to send GIB SET_INT", e)
+            Log.e(TAG, "Scan failed", e)
+            updateNotification("Scan failed: ${e.javaClass.simpleName}")
         }
     }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
-            val name = device.name ?: "Без имени"
+            val name = device.name ?: "NoName"
             val address = device.address
             val rssi = result.rssi
 
-            Log.i(TAG, "Обнаружено: $name | $address | RSSI: $rssi dBm")
+            Log.i(TAG, "Found: $name | $address | RSSI: $rssi")
 
-            val broadcastIntent = Intent("com.stasao.geelybuttons.BLE_SCAN_RESULT")
-            broadcastIntent.putExtra("device_name", name)
-            broadcastIntent.putExtra("device_address", address)
-            broadcastIntent.putExtra("rssi", rssi)
-            sendBroadcast(broadcastIntent)
+            sendBroadcast(Intent(Actions.UI_SCAN_RESULT).apply {
+                putExtra("device_name", name)
+                putExtra("device_address", address)
+                putExtra("rssi", rssi)
+            })
         }
 
         override fun onScanFailed(errorCode: Int) {
-            Log.e(TAG, "Ошибка сканирования: код $errorCode")
+            Log.e(TAG, "Scan failed: $errorCode")
         }
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
-        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            val address = gatt.device.address
+
+        override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            val address = g.device.address
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.i(TAG, "Подключено к $address (status: $status)")
-                connectedDevices[address] = gatt
-                updateNotification("Подключено к ${gatt.device.name ?: address}")
+                Log.i(TAG, "Connected to $address (status=$status)")
+                updateNotification("Connected: ${g.device.name ?: address}")
 
                 Handler(Looper.getMainLooper()).postDelayed({
-                    if (connectedDevices.containsKey(address)) {
-                        val success = gatt.discoverServices()
-                        Log.i(TAG, "discoverServices запущен: $success")
-                    }
-                }, 1500)
+                    val ok = g.discoverServices()
+                    Log.i(TAG, "discoverServices(): $ok")
+                }, 800)
+
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                Log.w(TAG, "Отключено от $address (status: $status)")
-                val oldGatt = connectedDevices.remove(address)
-                oldGatt?.disconnect()
-                oldGatt?.close()
-                gatt.disconnect()
-                gatt.close()
-                updateNotification("Отключено (status $status)")
+                Log.w(TAG, "Disconnected from $address (status=$status)")
+                updateNotification("Disconnected (status=$status)")
+
+                try {
+                    g.disconnect()
+                    g.close()
+                } catch (_: Exception) {}
+
+                if (gatt === g) gatt = null
             }
         }
 
-        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                Log.e(TAG, "Ошибка обнаружения сервисов: $status")
+                Log.e(TAG, "Services discovery failed: $status")
                 return
             }
 
-            Log.i(TAG, "Сервисы обнаружены на ${gatt.device.address}")
+            Log.i(TAG, "Services discovered on ${g.device.address}")
 
-            val service = gatt.getService(ESP_SERVICE_UUID)
+            val service = g.getService(ESP_SERVICE_UUID)
             if (service == null) {
-                Log.e(TAG, "Не найден ESP service: $ESP_SERVICE_UUID")
+                Log.e(TAG, "ESP service not found: $ESP_SERVICE_UUID")
                 return
             }
 
             val ch = service.getCharacteristic(ESP_CHAR_UUID)
             if (ch == null) {
-                Log.e(TAG, "Не найдена ESP characteristic: $ESP_CHAR_UUID")
+                Log.e(TAG, "ESP characteristic not found: $ESP_CHAR_UUID")
                 return
             }
 
-            Log.i(TAG, "Подписка на notify: ${ch.uuid}")
-            gatt.setCharacteristicNotification(ch, true)
+            Log.i(TAG, "Subscribing notify: ${ch.uuid}")
+            val notifOk = g.setCharacteristicNotification(ch, true)
+            Log.i(TAG, "setCharacteristicNotification: $notifOk")
 
-            val descriptor = ch.getDescriptor(CCCD_UUID)
-            if (descriptor == null) {
-                Log.e(TAG, "CCCD descriptor не найден: $CCCD_UUID")
+            val cccd = ch.getDescriptor(CCCD_UUID)
+            if (cccd == null) {
+                Log.e(TAG, "CCCD not found: $CCCD_UUID")
                 return
             }
 
-            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            val wrote = gatt.writeDescriptor(descriptor)
-            Log.i(TAG, "writeDescriptor(CCCD) called: $wrote")
+            cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            val writeOk = g.writeDescriptor(cccd)
+            Log.i(TAG, "writeDescriptor(CCCD): $writeOk")
+            updateNotification("Listening events...")
         }
 
-        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            val data = characteristic.value?.toString(Charset.defaultCharset())?.trim() ?: return
-            Log.i(TAG, "Получено от ${gatt.device.address}: $data")
+        override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            val raw = characteristic.value?.toString(Charset.defaultCharset())?.trim() ?: return
+            Log.i(TAG, "BLE event: $raw")
 
-            when (data) {
-                "ENC:+1" -> {
-                    fanSpeedIndex = (fanSpeedIndex + 1).coerceAtMost(FAN_SPEED_VALUES.lastIndex)
-                    val value = FAN_SPEED_VALUES[fanSpeedIndex]
-                    sendGibSetInt(FAN_SPEED_ID, value, FAN_SPEED_AREA)
-                }
-                "ENC:-1" -> {
-                    fanSpeedIndex = (fanSpeedIndex - 1).coerceAtLeast(0)
-                    val value = FAN_SPEED_VALUES[fanSpeedIndex]
-                    sendGibSetInt(FAN_SPEED_ID, value, FAN_SPEED_AREA)
-                }
-                else -> {
-                    Log.w(TAG, "Неизвестное событие BLE: $data")
-                }
+            // Parse
+            when (BleProtocol.parse(raw)) {
+                BleEvent.EncPlus -> fan.inc()
+                BleEvent.EncMinus -> fan.dec()
+
+                // пока просто логируем; потом повесишь клики на другие действия
+                BleEvent.BtnClick -> Log.i(TAG, "BTN:CLICK")
+                BleEvent.BtnLong -> Log.i(TAG, "BTN:LONG")
+
+                is BleEvent.Unknown -> Log.w(TAG, "Unknown BLE event: $raw")
             }
 
-            val broadcastIntent = Intent("com.stasao.geelybuttons.BLE_EVENT")
-            broadcastIntent.putExtra("last_event", data)
-            sendBroadcast(broadcastIntent)
+            // Update UI
+            sendBroadcast(Intent(Actions.UI_LAST_EVENT).apply {
+                putExtra("last_event", raw)
+            })
         }
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel("ble_channel", "BLE Listener", NotificationManager.IMPORTANCE_LOW)
+        val channel = NotificationChannel(
+            "ble_channel",
+            "BLE Listener",
+            NotificationManager.IMPORTANCE_LOW
+        )
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
     private fun getNotification(content: String): Notification {
         return NotificationCompat.Builder(this, "ble_channel")
-            .setContentTitle("BLE Listener")
+            .setContentTitle("GeelyButtons")
             .setContentText(content)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setOngoing(true)
@@ -263,19 +243,23 @@ class BleListenerService : Service() {
     }
 
     private fun updateNotification(content: String) {
-        val notification = getNotification(content)
-        getSystemService(NotificationManager::class.java).notify(1, notification)
+        getSystemService(NotificationManager::class.java).notify(1, getNotification(content))
     }
 
-    @SuppressLint("MissingPermission")
     override fun onDestroy() {
-        bluetoothAdapter.bluetoothLeScanner?.stopScan(scanCallback)
-        connectedDevices.values.forEach { gatt ->
-            gatt.disconnect()
-            gatt.close()
-        }
+        try {
+            bluetoothAdapter.bluetoothLeScanner?.stopScan(scanCallback)
+        } catch (_: Exception) {}
+
+        try {
+            gatt?.disconnect()
+            gatt?.close()
+        } catch (_: Exception) {}
+
+        gatt = null
+
         super.onDestroy()
-        Log.i(TAG, "Сервис остановлен")
+        Log.i(TAG, "Service stopped")
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
