@@ -121,7 +121,8 @@ void setup() {
             CHARACTERISTIC_UUID,
             BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
     );
-    // Убираем deprecated BLE2902 - характеристика автоматически добавит дескриптор
+
+    g_char->addDescriptor(new BLE2902());
 
     service->start();
 

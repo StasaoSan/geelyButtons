@@ -56,7 +56,8 @@ class MainActivity : AppCompatActivity() {
 
         listDevices.setOnItemClickListener { _, _, position, _ ->
             val selected = discoveredDevices[position]
-            val address = selected.split(" | ")[1].trim()
+            val parts = selected.split("|")
+            val address = parts.getOrNull(1)?.trim() ?: return@setOnItemClickListener
             val intent = Intent(this, BleListenerService::class.java)
             intent.putExtra("connect_address", address)
             intent.putExtra("device_names", etDeviceNames.text.toString())
