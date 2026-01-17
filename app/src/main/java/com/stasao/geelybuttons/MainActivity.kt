@@ -46,9 +46,9 @@ class MainActivity : AppCompatActivity() {
 
         listDevices.adapter = adapter
 
-        etDeviceNames.setText("RoundRemote")
-        etUpIntent.setText("bt.action.cup")
-        etDownIntent.setText("bt.action.cdown")
+        etDeviceNames.setText("DialRemote (connect by MAC from the list)")
+        etUpIntent.setText("ENC:+1 / ENC:-1")
+        etDownIntent.setText("BTN:CLICK / BTN:LONG")
 
         btnStartScan.setOnClickListener {
             startBleService()
