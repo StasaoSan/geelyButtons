@@ -207,14 +207,16 @@ class BleListenerService : Service() {
 
             // Parse
             when (BleProtocol.parse(raw)) {
-                BleEvent.EncPlus -> fan.inc()
-                BleEvent.EncMinus -> fan.dec()
+                BleEvent.FanUp -> fan.inc()
+                BleEvent.FanDown -> fan.dec()
 
-                // пока просто логируем; потом повесишь клики на другие действия
-                BleEvent.BtnClick -> Log.i(TAG, "BTN:CLICK")
-                BleEvent.BtnLong -> Log.i(TAG, "BTN:LONG")
+                BleEvent.Enc1Click -> Log.i(TAG, "ENC1 CLICK")
+                BleEvent.Enc1Long  -> Log.i(TAG, "ENC1 LONG")
 
-                is BleEvent.Unknown -> Log.w(TAG, "Unknown BLE event: $raw")
+                // handle other ble events
+                else -> {
+                    Log.i(TAG, "Unhandled BLE event: $raw")
+                }
             }
 
             // Update UI
