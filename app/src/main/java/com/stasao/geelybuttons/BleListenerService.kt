@@ -41,6 +41,13 @@ class BleListenerService : Service() {
     // === Business logic ===
     private lateinit var gib: GibApi
     private lateinit var fan: FanSpeedController
+    private lateinit var hvacPower: HvacPowerController
+    private lateinit var rearDefrost: RearDefrostController
+    private lateinit var electricDefrost: ElectricDefrostController
+    private lateinit var tempDual: TempDualController
+    private lateinit var climateZone: ClimateZoneController
+    private lateinit var tempMain: TempController
+    private lateinit var tempPass: TempController
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         createNotificationChannel()
@@ -48,6 +55,13 @@ class BleListenerService : Service() {
 
         gib = GibApi(this)
         fan = FanSpeedController(gib)
+        hvacPower = HvacPowerController(gib)
+        rearDefrost = RearDefrostController(gib)
+        electricDefrost = ElectricDefrostController(gib)
+        tempDual = TempDualController(gib)
+        climateZone = ClimateZoneController(gib)
+        tempMain = TempController(gib, area = 1)
+        tempPass = TempController(gib, area = 4)
 
         bluetoothManager = getSystemService(BluetoothManager::class.java)
         bluetoothAdapter = bluetoothManager.adapter
@@ -201,22 +215,36 @@ class BleListenerService : Service() {
             updateNotification("Listening events...")
         }
 
+        @Deprecated("Deprecated in Java")
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             val raw = characteristic.value?.toString(Charset.defaultCharset())?.trim() ?: return
             Log.i(TAG, "BLE event: $raw")
 
-            // Parse
             when (BleProtocol.parse(raw)) {
                 BleEvent.FanUp -> fan.inc()
                 BleEvent.FanDown -> fan.dec()
 
-                BleEvent.Enc1Click -> Log.i(TAG, "ENC1 CLICK")
-                BleEvent.Enc1Long  -> Log.i(TAG, "ENC1 LONG")
+                // enc1clk -> выключение климата
+                BleEvent.Enc1Click -> hvacPower.toggle()
 
-                // handle other ble events
-                else -> {
-                    Log.i(TAG, "Unhandled BLE event: $raw")
-                }
+                // enc1long -> dual режим
+                BleEvent.Enc1Long -> tempDual.toggle()
+
+                // enc2clk -> rear defrost
+                BleEvent.Enc2Click -> rearDefrost.toggle()
+
+                // enc2long -> electric defrost
+                BleEvent.Enc2Long -> electricDefrost.toggle()
+
+                // температура водителя
+                BleEvent.Enc1Up -> tempMain.inc()
+                BleEvent.Enc1Down -> tempMain.dec()
+
+                // температура пассажира
+                BleEvent.Enc2Up -> tempPass.inc()
+                BleEvent.Enc2Down -> tempPass.dec()
+
+                else -> Log.i(TAG, "Unhandled BLE event: $raw")
             }
 
             // Update UI
