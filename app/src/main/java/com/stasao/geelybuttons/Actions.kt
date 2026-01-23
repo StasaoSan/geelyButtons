@@ -125,21 +125,23 @@ class HvacPowerController(private val gib: GibApi) {
 class TempController(private val gib: GibApi, private val area: Int) {
     // IHvac.HVAC_FUNC_TEMP
     private val ID = 268828928
-
-    // По скрину текущее значение было "2" — стартуем с него.
-    // Потом, если захочешь, научим читать реальное значение через GET_*.
-    private var value = 2
-
-    private val min = 0
-    private val max = 10
+    private var value = 22.0f
+    private val step = 0.5f
+    private val min = 16.0f
+    private val max = 30.0f
 
     fun inc() {
-        value = (value + 1).coerceAtMost(max)
-        gib.setInt(ID, value, area)
+        value = (value + step).coerceAtMost(max)
+        gib.setFloat(ID, value, area)
     }
 
     fun dec() {
-        value = (value - 1).coerceAtLeast(min)
-        gib.setInt(ID, value, area)
+        value = (value - step).coerceAtLeast(min)
+        gib.setFloat(ID, value, area)
+    }
+
+    fun set(v: Float) {
+        value = v.coerceIn(min, max)
+        gib.setFloat(ID, value, area)
     }
 }

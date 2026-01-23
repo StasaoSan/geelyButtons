@@ -12,6 +12,10 @@ import android.widget.ListView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import androidx.core.net.toUri
 
 class MainActivity : AppCompatActivity() {
     private lateinit var tvLastEvent: TextView
@@ -48,6 +52,16 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        if (!Settings.canDrawOverlays(this)) {
+            val i = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                "package:$packageName".toUri()
+            )
+            startActivity(i)
+        } else {
+            startService(Intent(this, OverlayService::class.java))
+        }
+
         tvLastEvent = findViewById(R.id.tv_last_event)
         btnStartScan = findViewById(R.id.btn_start_scan)
         listDevices = findViewById(R.id.list_devices)
@@ -57,7 +71,10 @@ class MainActivity : AppCompatActivity() {
         btnStartScan.setOnClickListener {
             discoveredDevices.clear()
             adapter.notifyDataSetChanged()
-            startForegroundService(Intent(this, BleListenerService::class.java))
+            startForegroundService(
+                Intent(this, BleListenerService::class.java)
+                    .putExtra(BleListenerService.EXTRA_FORCE_SCAN, true)
+            )
         }
 
         listDevices.setOnItemClickListener { _, _, position, _ ->
@@ -73,7 +90,10 @@ class MainActivity : AppCompatActivity() {
                     putString("saved_mac", address)
                 }
 
-            startForegroundService(intent)
+            startForegroundService(
+                Intent(this, BleListenerService::class.java)
+                    .putExtra(BleListenerService.EXTRA_CONNECT_ADDRESS, address)
+            )
         }
 
     }
@@ -82,6 +102,10 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         registerReceiver(lastEventReceiver, IntentFilter(Actions.UI_LAST_EVENT))
         registerReceiver(scanReceiver, IntentFilter(Actions.UI_SCAN_RESULT))
+
+        if (Settings.canDrawOverlays(this)) {
+            startService(Intent(this, OverlayService::class.java))
+        }
     }
 
     override fun onPause() {

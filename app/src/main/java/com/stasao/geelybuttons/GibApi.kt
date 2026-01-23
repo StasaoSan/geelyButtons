@@ -8,10 +8,22 @@ class GibApi(private val ctx: Context) {
 
     private val GIB_PACKAGE = "com.salat.gbinder"
     private val SET_INT_ACTION = "com.salat.gbinder.SET_INT_PROPERTY"
+    private val SET_FLOAT_ACTION = "com.salat.gbinder.SET_FLOAT_PROPERTY"
 
 //    private val GET_INT_ACTION = "" // по идее должно помочь считывать данные, когда будет понятно как их читать (сюда такой же конфиг строка как в set)
 
-    fun setInt(id: Int, value: Int, area: Int? = null) { // как будто захардкожено чисто под одну вариацию управления скоростью вентилятора?
+    fun setFloat(id: Int, value: Float, area: Int? = null) {
+        val i = Intent(SET_FLOAT_ACTION).apply {
+            setPackage("com.salat.gbinder")
+            putExtra("id", id)
+            putExtra("value", value)
+            if (area != null) putExtra("area", area)
+            addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+        }
+        ctx.sendBroadcast(i)
+    }
+
+    fun setInt(id: Int, value: Int, area: Int? = null) {
         try {
             val i = Intent(SET_INT_ACTION).apply {
                 setPackage(GIB_PACKAGE)
