@@ -23,8 +23,8 @@ class BleListenerService : Service() {
     companion object {
         const val EXTRA_CONNECT_ADDRESS = "connect_address"
         const val EXTRA_AUTO_MODE = "auto_mode"
+        const val EXTRA_FORCE_SCAN = "force_scan"
     }
-
     private lateinit var bluetoothManager: BluetoothManager
     private lateinit var bluetoothAdapter: BluetoothAdapter
 
@@ -72,14 +72,18 @@ class BleListenerService : Service() {
             return START_NOT_STICKY
         }
 
-        val connectAddress = intent?.getStringExtra(EXTRA_CONNECT_ADDRESS)
+        val forceScan = intent?.getBooleanExtra(EXTRA_FORCE_SCAN, false) ?: false
+        val connectAddressFromIntent = intent?.getStringExtra(EXTRA_CONNECT_ADDRESS)
+
+        if (forceScan) {
+            startBleScan()
+            return START_STICKY
+        }
+
+        val connectAddress = connectAddressFromIntent
             ?: getSharedPreferences("prefs", MODE_PRIVATE).getString("saved_mac", null)
 
-        if (connectAddress != null) {
-            connectToAddress(connectAddress)
-        } else {
-            startBleScan()
-        }
+        if (connectAddress != null) connectToAddress(connectAddress) else startBleScan()
 
         return START_STICKY
     }
@@ -166,6 +170,9 @@ class BleListenerService : Service() {
                     Log.i(TAG, "discoverServices(): $ok")
                 }, 800)
 
+                sendBroadcast(Intent("com.stasao.geelybuttons.CONN_STATE").apply {
+                    putExtra("connected", true)
+                })
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.w(TAG, "Disconnected from $address (status=$status)")
                 updateNotification("Disconnected (status=$status)")
@@ -175,6 +182,9 @@ class BleListenerService : Service() {
                     g.close()
                 } catch (_: Exception) {}
 
+                sendBroadcast(Intent(OverlayService.ACTION_CONN_STATE).apply {
+                    putExtra(OverlayService.EXTRA_CONNECTED, false)
+                })
                 if (gatt === g) gatt = null
             }
         }
