@@ -38,4 +38,14 @@ class GibApi(private val ctx: Context) {
             Log.e("GibApi", "Failed to send SET_INT", e)
         }
     }
+
+    fun listenIntProperty(id: Int, area: Int? = null) {
+        val i = Intent("com.salat.gbinder.LISTEN_PROPERTY_CHANGES").apply {
+            setPackage("com.salat.gbinder")
+            putExtra("id", id)
+            if (area != null) putExtra("area", area)
+            addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+        }
+        ctx.sendBroadcast(i)
+    }
 }

@@ -145,3 +145,85 @@ class TempController(private val gib: GibApi, private val area: Int) {
         gib.setFloat(ID, value, area)
     }
 }
+
+class SeatHeatingController(private val gib: GibApi, private val area: Int) {
+    private val ID = 268763648
+
+    private val VALUES = intArrayOf(
+        0,          // OFF
+        268763649,  // L1
+        268763650,  // L2
+        268763651,  // L3
+        268763663   // AUTO
+    )
+
+    private var idx = 0
+
+    fun step() {
+        idx = (idx + 1) % VALUES.size
+        gib.setInt(ID, VALUES[idx], area)
+    }
+
+    fun off() {
+        idx = 0
+        gib.setInt(ID, 0, area)
+    }
+}
+
+class SeatFanController(private val gib: GibApi, private val area: Int) {
+    // IHvac.HVAC_FUNC_AUTO_SEAT_VENTILATION_TIME
+    private val ID = 268764160
+
+    private val VALUES = intArrayOf(
+        0,          // OFF
+        268764161,  // 1
+        268764162,  // 2
+        268764163,  // 3
+        268764164   // 4
+    )
+
+    private var idx = 0
+
+    fun step() {
+        idx = (idx + 1) % VALUES.size
+        gib.setInt(ID, VALUES[idx], area)
+    }
+
+    fun off() {
+        idx = 0
+        gib.setInt(ID, 0, area)
+    }
+}
+
+class AirflowController(private val gib: GibApi) {
+    private val ID = 268894464
+    private val AREA = 8
+
+    private var bodyOn = false
+    private var legsOn = false
+    private var winOn  = false
+
+    private val BODY_ON = 268894471
+    private val BODY_OFF = 268894466
+
+    private val LEGS_ON = 268894470
+    private val LEGS_OFF = 268894465
+
+    private val WIN_ON = 268894470
+    private val WIN_OFF = 268894466
+
+    fun toggleBody() {
+        bodyOn = !bodyOn
+        gib.setInt(ID, if (bodyOn) BODY_ON else BODY_OFF, AREA)
+    }
+
+    fun toggleLegs() {
+        legsOn = !legsOn
+        gib.setInt(ID, if (legsOn) LEGS_ON else LEGS_OFF, AREA)
+    }
+
+    fun toggleWindows() {
+        winOn = !winOn
+        gib.setInt(ID, if (winOn) WIN_ON else WIN_OFF, AREA)
+    }
+}
