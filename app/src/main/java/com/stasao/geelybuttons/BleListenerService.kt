@@ -9,7 +9,10 @@ import android.bluetooth.*
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -20,23 +23,28 @@ import java.util.UUID
 
 @SuppressLint("MissingPermission")
 class BleListenerService : Service() {
+
     companion object {
         const val EXTRA_CONNECT_ADDRESS = "connect_address"
         const val EXTRA_AUTO_MODE = "auto_mode"
         const val EXTRA_FORCE_SCAN = "force_scan"
     }
+
+    private val TAG = "BleListenerService"
+
     private lateinit var bluetoothManager: BluetoothManager
     private lateinit var bluetoothAdapter: BluetoothAdapter
 
     private var gatt: BluetoothGatt? = null
-    private var lastConnectAddress: String? = null
 
     // === BLE UUIDs (must match ESP firmware) ===
     private val ESP_SERVICE_UUID: UUID = UUID.fromString("4fafc201-1fb5-459e-8fcc-c5c9c331914b")
     private val ESP_CHAR_UUID: UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8")
     private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
-    private val TAG = "BleListenerService"
+    // ESP write-back (Android -> ESP)
+    private var espGatt: BluetoothGatt? = null
+    private var espTxChar: BluetoothGattCharacteristic? = null
 
     // === Business logic ===
     private lateinit var gib: GibApi
@@ -48,6 +56,7 @@ class BleListenerService : Service() {
     private lateinit var climateZone: ClimateZoneController
     private lateinit var tempMain: TempController
     private lateinit var tempPass: TempController
+    private lateinit var airflow: AirflowController
 
     private lateinit var heatDrv: SeatHeatingController
     private lateinit var heatPsg: SeatHeatingController
@@ -56,22 +65,22 @@ class BleListenerService : Service() {
     private lateinit var fanDrv: SeatFanController
     private lateinit var fanPsg: SeatFanController
 
-    // ESP write-back (Android -> ESP)
-    private var espGatt: BluetoothGatt? = null
-    private var espTxChar: BluetoothGattCharacteristic? = null
-
-    // GIB broadcast receiver
     private var gibReceiverRegistered: Boolean = false
-
-    private lateinit var airflow: AirflowController
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         createNotificationChannel()
         startForeground(1, getNotification("Starting..."))
 
+        // --- Init GIB ---
         gib = GibApi(this)
-        gib.listenIntProperty(268698368, area = 8)
-        gib.listenIntProperty(269027328, area = 8)
+
+        // то, что ты уже сделал: подписка/слушатели после init gib
+        // (оставляю пример — ты можешь добавлять сюда любые ID)
+        // gib.listenIntProperty(<ID>, area=<ZONE>)
+        // gib.listenIntProperty(268698368, area = 8)
+        // gib.listenIntProperty(269027328, area = 8)
+
+        // Controllers
         fan = FanSpeedController(gib)
         hvacPower = HvacPowerController(gib)
         rearDefrost = RearDefrostController(gib)
@@ -80,6 +89,7 @@ class BleListenerService : Service() {
         climateZone = ClimateZoneController(gib)
         tempMain = TempController(gib, area = 1)
         tempPass = TempController(gib, area = 4)
+        airflow = AirflowController(gib)
 
         heatDrv = SeatHeatingController(gib, area = 1)
         heatPsg = SeatHeatingController(gib, area = 4)
@@ -87,10 +97,11 @@ class BleListenerService : Service() {
         heatRearR = SeatHeatingController(gib, area = 64)
         fanDrv = SeatFanController(gib, area = 1)
         fanPsg = SeatFanController(gib, area = 4)
-        airflow = AirflowController(gib)
 
+        // Receiver that listens GIB broadcasts -> forward to ESP
         registerGibReceiverIfNeeded()
 
+        // --- Init BLE ---
         bluetoothManager = getSystemService(BluetoothManager::class.java)
         bluetoothAdapter = bluetoothManager.adapter
 
@@ -111,7 +122,11 @@ class BleListenerService : Service() {
         val connectAddress = connectAddressFromIntent
             ?: getSharedPreferences("prefs", MODE_PRIVATE).getString("saved_mac", null)
 
-        if (connectAddress != null) connectToAddress(connectAddress) else startBleScan()
+        if (connectAddress != null) {
+            connectToAddress(connectAddress)
+        } else {
+            startBleScan()
+        }
 
         return START_STICKY
     }
@@ -120,17 +135,17 @@ class BleListenerService : Service() {
         Log.i(TAG, "Connect request: $address")
         updateNotification("Connecting: $address")
 
-        // Cleanup old gatt
         try {
             gatt?.disconnect()
             gatt?.close()
         } catch (_: Exception) {}
         gatt = null
+        espGatt = null
+        espTxChar = null
 
         val device = bluetoothAdapter.getRemoteDevice(address)
 
-        // True = autoConnect; but it may connect "later". For car headunits it can be flaky.
-        // We'll keep it true for now as you had it, but you can try false if needed.
+        // autoConnect=true как у тебя было
         gatt = device.connectGatt(this, true, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
@@ -151,9 +166,7 @@ class BleListenerService : Service() {
             updateNotification("Scanning BLE (2 sec)...")
 
             Handler(Looper.getMainLooper()).postDelayed({
-                try {
-                    scanner.stopScan(scanCallback)
-                } catch (_: Exception) {}
+                try { scanner.stopScan(scanCallback) } catch (_: Exception) {}
                 Log.i(TAG, "Scan stopped")
                 updateNotification("Scan finished")
             }, 2000)
@@ -198,22 +211,25 @@ class BleListenerService : Service() {
                     Log.i(TAG, "discoverServices(): $ok")
                 }, 800)
 
+                // overlay green
                 sendBroadcast(Intent(OverlayService.ACTION_CONN_STATE).apply {
                     putExtra(OverlayService.EXTRA_CONNECTED, true)
                 })
+
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.w(TAG, "Disconnected from $address (status=$status)")
                 updateNotification("Disconnected (status=$status)")
 
-                try {
-                    g.disconnect()
-                    g.close()
-                } catch (_: Exception) {}
+                try { g.disconnect(); g.close() } catch (_: Exception) {}
+                if (gatt === g) gatt = null
 
+                espGatt = null
+                espTxChar = null
+
+                // overlay red
                 sendBroadcast(Intent(OverlayService.ACTION_CONN_STATE).apply {
                     putExtra(OverlayService.EXTRA_CONNECTED, false)
                 })
-                if (gatt === g) gatt = null
             }
         }
 
@@ -222,8 +238,6 @@ class BleListenerService : Service() {
                 Log.e(TAG, "Services discovery failed: $status")
                 return
             }
-
-            Log.i(TAG, "Services discovered on ${g.device.address}")
 
             val service = g.getService(ESP_SERVICE_UUID)
             if (service == null) {
@@ -237,11 +251,16 @@ class BleListenerService : Service() {
                 return
             }
 
-            // Store references for write-back
+            // store for write-back
             espGatt = g
             espTxChar = ch
 
-            Log.i(TAG, "Subscribing notify: ${ch.uuid}")
+            // use no-response if supported (faster)
+            if ((ch.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+                ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            }
+
+            // subscribe notify
             val notifOk = g.setCharacteristicNotification(ch, true)
             Log.i(TAG, "setCharacteristicNotification: $notifOk")
 
@@ -254,6 +273,7 @@ class BleListenerService : Service() {
             cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
             val writeOk = g.writeDescriptor(cccd)
             Log.i(TAG, "writeDescriptor(CCCD): $writeOk")
+
             updateNotification("Listening events...")
         }
 
@@ -266,119 +286,113 @@ class BleListenerService : Service() {
                 BleEvent.FanUp -> fan.inc()
                 BleEvent.FanDown -> fan.dec()
 
-                // enc1clk -> выключение климата
                 BleEvent.Enc1Click -> hvacPower.toggle()
+                BleEvent.Enc1Long  -> tempDual.toggle()
 
-                // enc1long -> dual режим
-                BleEvent.Enc1Long -> tempDual.toggle()
-
-                // enc2clk -> rear defrost
                 BleEvent.Enc2Click -> rearDefrost.toggle()
+                BleEvent.Enc2Long  -> electricDefrost.toggle()
 
-                // enc2long -> electric defrost
-                BleEvent.Enc2Long -> electricDefrost.toggle()
-
-                // температура водителя
                 BleEvent.MainTempUp -> tempMain.inc()
                 BleEvent.MainTempDown -> tempMain.dec()
 
-                // температура пассажира
                 BleEvent.PassTempUp -> tempPass.inc()
                 BleEvent.PassTempDown -> tempPass.dec()
 
-                // багажник (реализовать)
-//                BleEvent.Thunk ->
-
-                // переключение потоков воздуха
                 BleEvent.ClimateBody -> airflow.toggleBody()
                 BleEvent.ClimateLegs -> airflow.toggleLegs()
                 BleEvent.ClimateWindows -> airflow.toggleWindows()
 
-                // Подогрев водителя
                 BleEvent.DrvHeatStep -> heatDrv.step()
                 BleEvent.DrvHeatOff -> heatDrv.off()
 
-                // Обдув водителя
                 BleEvent.DrvFanStep -> fanDrv.step()
                 BleEvent.DrvFanOff -> fanDrv.off()
 
-                // Подогрев пассажира
                 BleEvent.PassHeatStep -> heatPsg.step()
                 BleEvent.PassHeatOff -> heatPsg.off()
 
-                // Обдув пассажира
                 BleEvent.PassFanStep -> fanPsg.step()
                 BleEvent.PassFanOff -> fanPsg.off()
-
 
                 else -> Log.i(TAG, "Unhandled BLE event: $raw")
             }
 
-            // Update UI
             sendBroadcast(Intent(Actions.UI_LAST_EVENT).apply {
                 putExtra("last_event", raw)
             })
         }
     }
 
-    private val gibReceiver = object : android.content.BroadcastReceiver() {
-        override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+    // ===================== GIB -> Android -> ESP =====================
+
+    private val gibReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
             if (intent == null) return
             val action = intent.action ?: return
 
-            // Common extras used by GIB broadcasts
+            // GIB обычно шлёт id + zone + value (в логах у тебя именно "zone=8")
             val id = intent.getIntExtra("id", -1)
-            val area = intent.getIntExtra("area", -1)
-
-            // For INT updates
-            val intValue = intent.getIntExtra("value", Int.MIN_VALUE)
-
-            // For FLOAT updates
-            val floatValue = intent.getFloatExtra("value", Float.NaN)
-
             if (id == -1) return
 
-            Log.i(TAG, "GIB event: action=$action id=$id area=$area valueInt=$intValue valueFloat=$floatValue")
+            // zone/area: поддержим оба ключа, потому что GIB/версии гуляют
+            val zone = when {
+                intent.hasExtra("zone") -> intent.getIntExtra("zone", 0)
+                intent.hasExtra("area") -> intent.getIntExtra("area", 0)
+                else -> 0
+            }
 
-            // Forward a minimal feedback message to ESP (Android -> ESP)
-            // Example formats:
-            //  INT:  GIB:INT:<id>:<area>:<value>
-            //  FLOAT:GIB:FLOAT:<id>:<area>:<value>
-            if (intValue != Int.MIN_VALUE) {
-                val a = if (area >= 0) area else 0
-                sendToEsp("GIB:INT:$id:$a:$intValue")
-            } else if (!floatValue.isNaN()) {
-                val a = if (area >= 0) area else 0
-                sendToEsp("GIB:FLOAT:$id:$a:$floatValue")
+            // value бывает int или float
+            val hasInt = intent.hasExtra("value") && (intent.extras?.get("value") is Int)
+            val hasFloat = intent.hasExtra("value") && (intent.extras?.get("value") is Float)
+
+            if (hasInt) {
+                val v = intent.getIntExtra("value", 0)
+                Log.i(TAG, "GIB INT: action=$action id=$id zone=$zone v=$v")
+                sendToEsp("GIB:INT:$id:$zone:$v")
+            } else if (hasFloat) {
+                val v = intent.getFloatExtra("value", 0f)
+                Log.i(TAG, "GIB FLOAT: action=$action id=$id zone=$zone v=$v")
+                sendToEsp("GIB:FLOAT:$id:$zone:$v")
+            } else {
+                // иногда value приходит как Long/String — логируем, чтобы ты увидел формат
+                Log.i(TAG, "GIB event (unknown value type): action=$action id=$id zone=$zone extras=${intent.extras}")
             }
         }
     }
 
     private fun registerGibReceiverIfNeeded() {
         if (gibReceiverRegistered) return
-        val filter = android.content.IntentFilter().apply {
+
+        val filter = IntentFilter().apply {
             addAction("com.salat.gbinder.PROPERTY_INT_CHANGED")
             addAction("com.salat.gbinder.PROPERTY_FLOAT_CHANGED")
-            addAction("com.salat.gbinder.PROPERTY_VALUE_CHANGED")
+            // если у тебя другой action — добавь сюда
         }
+
         registerReceiver(gibReceiver, filter)
         gibReceiverRegistered = true
+        Log.i(TAG, "GIB receiver registered")
     }
 
     private fun sendToEsp(msg: String) {
         val g = espGatt ?: return
         val ch = espTxChar ?: return
-        // Only write if characteristic supports write
-        val canWrite = (ch.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0 ||
-            (ch.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0
+
+        val canWrite =
+            (ch.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0 ||
+                    (ch.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0
+
         if (!canWrite) {
-            Log.w(TAG, "ESP characteristic is not writable; cannot send: $msg")
+            Log.w(TAG, "ESP characteristic not writable, msg=$msg")
             return
         }
+
         ch.value = msg.toByteArray(Charsets.UTF_8)
         val ok = g.writeCharacteristic(ch)
         Log.i(TAG, "Sent to ESP: ok=$ok msg=$msg")
     }
+
+    // ===================== Notification helpers =====================
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
@@ -403,23 +417,19 @@ class BleListenerService : Service() {
     }
 
     override fun onDestroy() {
-        try {
-            bluetoothAdapter.bluetoothLeScanner?.stopScan(scanCallback)
-        } catch (_: Exception) {}
+        try { bluetoothAdapter.bluetoothLeScanner?.stopScan(scanCallback) } catch (_: Exception) {}
 
-        try {
-            gatt?.disconnect()
-            gatt?.close()
-        } catch (_: Exception) {}
-
+        try { gatt?.disconnect(); gatt?.close() } catch (_: Exception) {}
         gatt = null
+        espGatt = null
+        espTxChar = null
 
         if (gibReceiverRegistered) {
             try { unregisterReceiver(gibReceiver) } catch (_: Exception) {}
             gibReceiverRegistered = false
         }
 
-        // Ensure overlay turns red when service stops
+        // overlay red
         sendBroadcast(Intent(OverlayService.ACTION_CONN_STATE).apply {
             putExtra(OverlayService.EXTRA_CONNECTED, false)
         })
