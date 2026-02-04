@@ -13,9 +13,9 @@ sealed class BleEvent {
     data object PassTempDown : BleEvent()
     data object Enc2Click : BleEvent()
     data object Enc2Long : BleEvent()
-    data object ClimateBody : BleEvent() // not released in actions
-    data object ClimateLegs : BleEvent() // not released in actions
-    data object ClimateWindows : BleEvent() // not released in actions
+    data object ClimateBody : BleEvent()
+    data object ClimateLegs : BleEvent()
+    data object ClimateWindows : BleEvent()
     data object Thunk : BleEvent() // not released in actions
     data object DrvHeatStep : BleEvent()
     data object DrvFanStep : BleEvent()

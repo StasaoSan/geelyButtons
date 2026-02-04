@@ -52,12 +52,19 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        val prefs = getSharedPreferences("prefs", MODE_PRIVATE)
+        val asked = prefs.getBoolean("asked_overlay", false)
+
         if (!Settings.canDrawOverlays(this)) {
-            val i = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                "package:$packageName".toUri()
-            )
-            startActivity(i)
+            if (!asked) {
+                prefs.edit { putBoolean("asked_overlay", true) }
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        "package:$packageName".toUri()
+                    )
+                )
+            }
         } else {
             startService(Intent(this, OverlayService::class.java))
         }

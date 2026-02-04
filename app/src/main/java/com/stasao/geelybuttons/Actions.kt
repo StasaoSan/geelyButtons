@@ -25,6 +25,11 @@ class FanSpeedController(private val gib: GibApi) {
         idx = (idx - 1).coerceAtLeast(0)
         gib.setInt(FAN_SPEED_ID, VALUES[idx], FAN_SPEED_AREA)
     }
+
+    fun syncFromGib(value: Int) {
+        val i = VALUES.indexOf(value)
+        if (i >= 0) idx = i
+    }
 }
 
 class RearDefrostController(private val gib: GibApi) {
@@ -37,9 +42,8 @@ class RearDefrostController(private val gib: GibApi) {
         gib.setInt(ID, if (on) 1 else 0, area = null)
     }
 
-    fun setEnabled(enabled: Boolean) {
-        on = enabled
-        gib.setInt(ID, if (on) 1 else 0, area = null)
+    fun syncFromGib(value: Int) {
+        on = (value == 1)
     }
 }
 
@@ -53,9 +57,8 @@ class ElectricDefrostController(private val gib: GibApi) {
         gib.setInt(ID, if (on) 1 else 0, area = null)
     }
 
-    fun setEnabled(enabled: Boolean) {
-        on = enabled
-        gib.setInt(ID, if (on) 1 else 0, area = null)
+    fun syncFromGib(value: Int) {
+        on = (value == 1)
     }
 }
 
@@ -69,41 +72,69 @@ class TempDualController(private val gib: GibApi) {
         gib.setInt(ID, if (on) 1 else 0, area = null)
     }
 
-    fun setEnabled(enabled: Boolean) {
-        on = enabled
-        gib.setInt(ID, if (on) 1 else 0, area = null)
+    fun syncFromGib(value: Int) {
+        on = (value == 1)
     }
 }
 
 // --- Enum-like value set ------------------------------------------
-
 class ClimateZoneController(private val gib: GibApi) {
     // IHvac.HVAC_FUNC_CLIMATE_ZONE
     private val ID = 268502272
 
-    private val VALUES = intArrayOf(
-        268502273, // SINGLE
-        268502274, // DUAL
-        268502275, // TRIPLE
-        268502276  // FOUR
-    )
+    companion object {
+        const val SINGLE = 268502273
+        const val DUAL   = 268502274
+    }
 
-    private var idx = 1 // по умолчанию DUAL (как чаще всего в авто)
+    private val VALUES = intArrayOf(SINGLE, DUAL)
+
+    private var idx: Int = -1              // неизвестно до синка
+    private var lastValue: Int? = null     // реальное значение из GIB
 
     fun next() {
+        ensureKnownOrDefault()
         idx = (idx + 1) % VALUES.size
         gib.setInt(ID, VALUES[idx], area = null)
     }
 
     fun prev() {
+        ensureKnownOrDefault()
         idx = (idx - 1 + VALUES.size) % VALUES.size
         gib.setInt(ID, VALUES[idx], area = null)
     }
 
-    fun setSingle() { idx = 0; gib.setInt(ID, VALUES[idx], null) }
-    fun setDual()   { idx = 1; gib.setInt(ID, VALUES[idx], null) }
-    fun setTriple() { idx = 2; gib.setInt(ID, VALUES[idx], null) }
-    fun setFour()   { idx = 3; gib.setInt(ID, VALUES[idx], null) }
+    fun setSingle() { setValue(SINGLE) }
+    fun setDual()   { setValue(DUAL) }
+
+    fun toggleDual() {
+        val current = lastValue
+        if (current == DUAL) setSingle() else setDual()
+    }
+
+    fun syncFromGib(v: Int) {
+        lastValue = v
+        idx = VALUES.indexOf(v)
+    }
+
+    fun currentLabel(): String = when (lastValue) {
+        SINGLE -> "SINGLE"
+        DUAL -> "DUAL"
+        null -> "?"
+        else -> "UNK($lastValue)"
+    }
+
+    private fun setValue(v: Int) {
+        lastValue = v
+        idx = VALUES.indexOf(v)
+        gib.setInt(ID, v, area = null)
+    }
+
+    private fun ensureKnownOrDefault() {
+        if (idx >= 0) return
+        idx = 0
+        lastValue = VALUES[idx]
+    }
 }
 
 class HvacPowerController(private val gib: GibApi) {
@@ -125,24 +156,43 @@ class HvacPowerController(private val gib: GibApi) {
 class TempController(private val gib: GibApi, private val area: Int) {
     // IHvac.HVAC_FUNC_TEMP
     private val ID = 268828928
-    private var value = 22.0f
+    private var value: Float? = null
+
     private val step = 0.5f
     private val min = 16.0f
     private val max = 30.0f
 
     fun inc() {
-        value = (value + step).coerceAtMost(max)
-        gib.setFloat(ID, value, area)
+        val v = (value ?: return) // пока не синкнулись — не делаем прыжков
+        val next = quantize((v + step).coerceAtMost(max))
+        value = next
+        gib.setFloat(ID, next, area)
     }
 
     fun dec() {
-        value = (value - step).coerceAtLeast(min)
-        gib.setFloat(ID, value, area)
+        val v = (value ?: return)
+        val next = quantize((v - step).coerceAtLeast(min))
+        value = next
+        gib.setFloat(ID, next, area)
     }
 
     fun set(v: Float) {
-        value = v.coerceIn(min, max)
-        gib.setFloat(ID, value, area)
+        val next = quantize(v.coerceIn(min, max))
+        value = next
+        gib.setFloat(ID, next, area)
+    }
+
+    fun syncFromGib(v: Float) {
+        value = quantize(v.coerceIn(min, max))
+    }
+
+    fun current(): Float? = value
+
+    private fun quantize(v: Float): Float {
+        val k = (v / step).toInt()
+        val snapped = k * step
+
+        return kotlin.math.round(v / step) * step
     }
 }
 
@@ -154,7 +204,6 @@ class SeatHeatingController(private val gib: GibApi, private val area: Int) {
         268763649,  // L1
         268763650,  // L2
         268763651,  // L3
-        268763663   // AUTO
     )
 
     private var idx = 0
@@ -179,7 +228,6 @@ class SeatFanController(private val gib: GibApi, private val area: Int) {
         268764161,  // 1
         268764162,  // 2
         268764163,  // 3
-        268764164   // 4
     )
 
     private var idx = 0
