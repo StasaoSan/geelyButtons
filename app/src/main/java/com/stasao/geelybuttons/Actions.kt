@@ -225,9 +225,9 @@ class SeatFanController(private val gib: GibApi, private val area: Int) {
 
     private val VALUES = intArrayOf(
         0,          // OFF
-        268764161,  // 1
-        268764162,  // 2
-        268764163,  // 3
+        268763393,  // 1
+        268763394,  // 2
+        268763395,  // 3
     )
 
     private var idx = 0
