@@ -189,9 +189,6 @@ class TempController(private val gib: GibApi, private val area: Int) {
     fun current(): Float? = value
 
     private fun quantize(v: Float): Float {
-        val k = (v / step).toInt()
-        val snapped = k * step
-
         return kotlin.math.round(v / step) * step
     }
 }
