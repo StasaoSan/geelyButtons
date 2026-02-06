@@ -66,54 +66,49 @@ class BleClient(
     private val gattCallback = object : BluetoothGattCallback() {
 
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            val connected = newState == BluetoothProfile.STATE_CONNECTED
-            Log.i(tag, "conn state=$newState status=$status")
+            val connected = (newState == BluetoothProfile.STATE_CONNECTED)
+
+            if (!connected) {
+                espLink.unbind()
+            }
+
             onConnectedChanged(connected)
 
             if (connected) {
-                mainHandler.postDelayed({ g.discoverServices() }, 800)
+                Handler(Looper.getMainLooper()).postDelayed({
+                    g.discoverServices()
+                }, 600)
             } else {
                 try { g.disconnect(); g.close() } catch (_: Exception) {}
                 if (gatt === g) gatt = null
-                espLink.unbind()
             }
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                Log.e(tag, "discover failed $status")
-                return
-            }
+            if (status != BluetoothGatt.GATT_SUCCESS) return
 
-            val service = g.getService(BleUuids.ESP_SERVICE_UUID) ?: run {
-                Log.e(tag, "ESP service not found")
-                return
-            }
+            val service = g.getService(BleUuids.ESP_SERVICE_UUID) ?: return
+            val ch = service.getCharacteristic(BleUuids.ESP_CHAR_UUID) ?: return
 
-            val ch = service.getCharacteristic(BleUuids.ESP_CHAR_UUID) ?: run {
-                Log.e(tag, "ESP char not found")
-                return
-            }
-
-            // bind link for writes
             espLink.bind(g, ch)
 
-            // subscribe notifications
+            // notify subscribe — как у тебя уже сделано
             g.setCharacteristicNotification(ch, true)
-            val cccd = ch.getDescriptor(BleUuids.CCCD_UUID) ?: run {
-                Log.e(tag, "CCCD not found")
-                return
-            }
+            val cccd = ch.getDescriptor(BleUuids.CCCD_UUID) ?: return
             cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
             g.writeDescriptor(cccd)
-
-            Log.i(tag, "subscribed")
         }
 
         @Deprecated("Deprecated in Java")
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             val raw = characteristic.value?.toString(Charsets.UTF_8)?.trim() ?: return
             onBleTextEvent(raw)
+        }
+
+        @Deprecated("Deprecated in Java")
+        override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            val ok = (status == BluetoothGatt.GATT_SUCCESS)
+            espLink.onWriteComplete(ok)
         }
     }
 }

@@ -64,8 +64,8 @@ class GibBridge(
                 else -> 0
             }
 
-            // твой кейс: приходит "result"
             val any = intent.extras?.get("result")
+                ?: intent.extras?.get("value")
             if (any == null) {
                 Log.i(tag, "no result; extras=${intent.extras?.keySet()}")
                 return
